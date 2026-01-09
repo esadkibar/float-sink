@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Yüzdürme–Batırma (Float–Sink) Tablosu Hesaplayıcı</title>
+  <style>
+    body{font-family:Arial, sans-serif; margin:22px; color:#111;}
+    .wrap{max-width:1200px; margin:auto;}
+    h1{font-size:20px; margin:0 0 10px;}
+    .row{display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin:10px 0;}
+    button{padding:10px 12px; border:0; background:#0b74de; color:#fff; cursor:pointer; border-radius:10px;}
+    button.secondary{background:#333;}
+    button.danger{background:#b00020;}
+    button:active{transform:translateY(1px);}
+    .hint{font-size:12px; color:#555; margin:6px 0 10px; line-height:1.4;}
+    .box{background:#fafafa; border:1px solid #e6e6e6; padding:12px; border-radius:12px; margin-top:12px;}
+    table{border-collapse:collapse; width:100%; font-size:12.5px;}
+    th,td{border:1px solid #ddd; padding:6px 8px; text-align:right; white-space:nowrap;}
+    th{background:#f3f6f8; font-weight:700;}
+    td.left, th.left{text-align:left;}
+    input{padding:7px 8px; border:1px solid #ccc; border-radius:10px; width:90px; text-align:right;}
+    input:focus{outline:2px solid rgba(11,116,222,.25); border-color:#0b74de;}
+    .status{font-size:12px; padding:8px 10px; border-radius:10px; display:inline-block;}
+    .ok{background:#e9f7ee; color:#0a7b2e; border:1px solid #bfe7cd;}
+    .warn{background:#fff4e5; color:#8a4b00; border:1px solid #ffd39a;}
+    .err{background:#fdecec; color:#b00020; border:1px solid #f7b5bf;}
+    .muted{color:#666;}
+    .kpi{display:flex; gap:16px; flex-wrap:wrap; margin-top:8px;}
+    .kpi > div{min-width:160px;}
+    .kpi .label{font-size:12px; color:#666;}
+    .kpi .val{font-weight:700;}
+    canvas{width:100%; height:560px; border:1px solid #e3e3e3; border-radius:12px; background:#fff;}
+    .subhead{font-size:14px; font-weight:700; margin:0 0 8px;}
+    .pill{font-size:12px; padding:6px 8px; border:1px solid #e3e3e3; border-radius:999px; background:#fff;}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Yüzdürme–Batırma (Float–Sink) Tablosu Hesaplayıcı</h1>
+
+  <div class="hint">
+    Sadece <b>%M</b> ve <b>%K</b> gir. Tek grafikte: <b>Parça kül</b>, <b>Yüzen</b>, <b>Batan</b>, <b>Yoğunluk eğrisi</b>.
+    Üst yoğunluk ekseni: <b>1.90 → x=30</b> ve <b>1.20 → x=100</b>.
+  </div>
+
+  <div class="row">
+    <button onclick="calculate()">Hesapla</button>
+    <button class="secondary" onclick="exportCSV()">CSV Dışa Aktar</button>
+    <button class="danger" onclick="clearInputs()">Temizle</button>
+    <span id="status" class="status muted" style="border:1px dashed #ccc;">Hazır</span>
+    <span class="pill">Sol eksen: Cum. Float | Sağ eksen: Cum. Sink | Üst eksen: ρ | Alt eksen: Kül%</span>
+  </div>
+
+  <div class="box">
+    <div style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th class="left">Yoğunluk Aralığı</th>
+            <th>%M</th>
+            <th>%K</th>
+            <th>M*K</th>
+            <th class="left">Toplam Yüzen</th>
+            <th>ΣM</th>
+            <th>Σ(MK)</th>
+            <th>ΣK</th>
+            <th class="left">Toplam Batan</th>
+            <th>ΣM</th>
+            <th>Σ(MK)</th>
+            <th>ΣK</th>
+          </tr>
+        </thead>
+        <tbody id="body"></tbody>
+        <tfoot>
+          <tr>
+            <th class="left">TOPLAM</th>
+            <th id="totM">-</th>
+            <th class="muted">—</th>
+            <th id="totMK">-</th>
+            <th colspan="8" class="left muted">Kontrol: ΣM ≈ 100 olmalı. Toplam kül(%) = Σ(MK)/100</th>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <div class="kpi">
+      <div><div class="label">ΣM</div><div id="kpiM" class="val">-</div></div>
+      <div><div class="label">Toplam kül (%)</div><div id="kpiK" class="val">-</div></div>
+      <div><div class="label">Σ(MK)</div><div id="kpiMK" class="val">-</div></div>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="subhead">Birleşik Grafik</div>
+    <div class="hint" style="margin-top:0;">
+      Sönük yatay çizgiler: yüzen noktası sağa, batan noktası sola uzatılır (aynı y seviyesinde “kesişim” okuması).
+    </div>
+    <canvas id="chartAll"></canvas>
+  </div>
+</div>
+
+<script>
+  // Default sınıflar
+  const CLASSES = [
+    {label:"<1.3",    min:null, max:1.3},
+    {label:"1.3-1.4", min:1.3,  max:1.4},
+    {label:"1.4-1.5", min:1.4,  max:1.5},
+    {label:"1.5-1.6", min:1.5,  max:1.6},
+    {label:"1.6-1.7", min:1.6,  max:1.7},
+    {label:"1.7-1.8", min:1.7,  max:1.8},
+    {label:"1.8-1.9", min:1.8,  max:1.9},
+    {label:">1.9",    min:1.9,  max:null},
+  ];
+
+  // Yoğunluk tickleri: soldan sağa 1.90 -> 1.20
+  const DENSITY_TICKS = [1.90,1.80,1.70,1.60,1.50,1.40,1.30,1.20];
+
+  const tbody = document.getElementById("body");
+
+  function setStatus(type, msg){
+    const el = document.getElementById("status");
+    el.textContent = msg;
+    el.className = "status " + (type || "muted");
+  }
+  function fmt(x, d=1){ return Number.isFinite(x) ? x.toFixed(d) : "-"; }
+  function safeNumFromInput(inp){
+    const s = String(inp.value ?? "").trim().replaceAll(",",".");
+    if (s === "") return NaN;
+    const v = Number(s);
+    return Number.isFinite(v) ? v : NaN;
+  }
+
+  function init(){
+    tbody.innerHTML = "";
+    CLASSES.forEach((c,i)=>{
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="left">${c.label}</td>
+        <td><input inputmode="decimal" placeholder="örn 7.4"></td>
+        <td><input inputmode="decimal" placeholder="örn 3.6"></td>
+        <td class="mk">-</td>
+        <td class="left muted"></td>
+        <td class="f_sm">-</td>
+        <td class="f_smk">-</td>
+        <td class="f_sk">-</td>
+        <td class="left muted"></td>
+        <td class="s_sm">-</td>
+        <td class="s_smk">-</td>
+        <td class="s_sk">-</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // örnek veri
+    const sample = [
+      [7.4,3.6],[20.2,6.9],[5.1,18.5],[7.1,29.6],[4.9,39.5],[7.3,49.6],[7.7,56.9],[40.3,69.5]
+    ];
+    [...tbody.querySelectorAll("tr")].forEach((tr,i)=>{
+      const ins = tr.querySelectorAll("input");
+      ins[0].value = sample[i][0];
+      ins[1].value = sample[i][1];
+    });
+
+    calculate();
+  }
+
+  function clearInputs(){
+    [...tbody.querySelectorAll("tr")].forEach(tr=>{
+      const ins = tr.querySelectorAll("input");
+      ins[0].value = ""; ins[1].value = "";
+      ["mk","f_sm","f_smk","f_sk","s_sm","s_smk","s_sk"].forEach(cls=>tr.querySelector("."+cls).textContent="-");
+    });
+    ["totM","totMK","kpiM","kpiMK","kpiK"].forEach(id=>document.getElementById(id).textContent="-");
+    setStatus("muted","Temizlendi. Değer girip Hesapla.");
+    clearCanvas("chartAll");
+    window.__LAST_ROWS__ = null;
+  }
+
+  function clearCanvas(id){
+    const c = document.getElementById(id);
+    const ctx = c.getContext("2d");
+    resizeCanvasToDisplaySize(c);
+    ctx.clearRect(0,0,c.width,c.height);
+  }
+
+  function calculate(){
+    const rows = [...tbody.querySelectorAll("tr")].map((tr,i)=>{
+      const inputs = tr.querySelectorAll("input");
+      const m = safeNumFromInput(inputs[0]);
+      const k = safeNumFromInput(inputs[1]);
+      return {tr,i,...CLASSES[i], m, k, mk: NaN};
+    });
+
+    for (let i=0;i<rows.length;i++){
+      const r=rows[i];
+      if (!Number.isFinite(r.m) || r.m < 0){ setStatus("err",`Satır ${i+1}: %M geçersiz/boş`); return; }
+      if (!Number.isFinite(r.k) || r.k < 0){ setStatus("err",`Satır ${i+1}: %K geçersiz/boş`); return; }
+      r.mk = r.m * r.k;
+    }
+
+    let totM=0, totMK=0;
+    rows.forEach(r=>{ totM += r.m; totMK += r.mk; });
+    const totK = totMK/100;
+
+    // float cumulative
+    let cM=0, cMK=0;
+    rows.forEach(r=>{
+      cM += r.m; cMK += r.mk;
+      r.f_SM = cM;
+      r.f_SMK = cMK;
+      r.f_SK = (cM>0) ? (cMK/cM) : NaN;
+    });
+
+    // sink cumulative (reverse)
+    let sM=0, sMK=0;
+    for (let i=rows.length-1;i>=0;i--){
+      const r=rows[i];
+      sM += r.m; sMK += r.mk;
+      r.s_SM = sM;
+      r.s_SMK = sMK;
+      r.s_SK = (sM>0) ? (sMK/sM) : NaN;
+    }
+
+    // render table
+    rows.forEach(r=>{
+      r.tr.querySelector(".mk").textContent = fmt(r.mk,1);
+      r.tr.querySelector(".f_sm").textContent = fmt(r.f_SM,1);
+      r.tr.querySelector(".f_smk").textContent = fmt(r.f_SMK,1);
+      r.tr.querySelector(".f_sk").textContent = fmt(r.f_SK,1);
+      r.tr.querySelector(".s_sm").textContent = fmt(r.s_SM,1);
+      r.tr.querySelector(".s_smk").textContent = fmt(r.s_SMK,1);
+      r.tr.querySelector(".s_sk").textContent = fmt(r.s_SK,1);
+    });
+
+    document.getElementById("totM").textContent = fmt(totM,1);
+    document.getElementById("totMK").textContent = fmt(totMK,1);
+    document.getElementById("kpiM").textContent = fmt(totM,1);
+    document.getElementById("kpiMK").textContent = fmt(totMK,1);
+    document.getElementById("kpiK").textContent = fmt(totK,2);
+
+    const delta = Math.abs(totM-100);
+    if (delta<=0.5) setStatus("ok",`OK. ΣM ≈ ${totM.toFixed(1)} | Toplam kül = ${totK.toFixed(2)}%`);
+    else setStatus("warn",`Uyarı: ΣM = ${totM.toFixed(1)} (100 olmalı). Toplam kül = ${totK.toFixed(2)}%`);
+
+    window.__LAST_ROWS__ = rows;
+    drawCombinedChart(rows);
+  }
+
+  // ---------------- Canvas helpers ----------------
+  function resizeCanvasToDisplaySize(canvas){
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h){ canvas.width=w; canvas.height=h; }
+  }
+  function isFin(a,b){ return Number.isFinite(a) && Number.isFinite(b); }
+
+  // Lineer ekstrapolasyonla eğriyi hedef Y noktasına uzatır
+  function extendToY(points, targetY){
+    const pts = points.filter(p=>isFin(p.x,p.y));
+    if (pts.length < 2) return pts;
+
+    const sorted = [...pts].sort((a,b)=>a.y-b.y);
+    let p0, p1;
+    if (targetY <= sorted[0].y){ p0=sorted[0]; p1=sorted[1]; }
+    else if (targetY >= sorted[sorted.length-1].y){ p0=sorted[sorted.length-2]; p1=sorted[sorted.length-1]; }
+    else return pts;
+
+    const dy = (p1.y - p0.y);
+    if (Math.abs(dy) < 1e-9) return pts;
+
+    const t = (targetY - p0.y) / dy;
+    let x = p0.x + t*(p1.x - p0.x);
+    x = Math.max(0, Math.min(100, x));
+    if (!pts.some(p=>Math.abs(p.y-targetY) < 1e-6)) pts.push({x, y:targetY});
+    return pts;
+  }
+
+  function drawLegend(ctx, x, y, items){
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.font = `${Math.round(11*dpr)}px Arial`;
+    let yy = y;
+    for (const it of items){
+      ctx.fillStyle = it.color;
+      ctx.fillRect(x, yy - Math.round(8*dpr), Math.round(16*dpr), Math.round(6*dpr));
+      ctx.fillStyle = "#111";
+      ctx.fillText(it.name, x + Math.round(22*dpr), yy - Math.round(3*dpr));
+      yy += Math.round(16*dpr);
+    }
+    ctx.restore();
+  }
+
+  function drawLineWithPoints(ctx, data, X, Y, color, drawPoints=true){
+    const pts = data.filter(p=>isFin(p.x,p.y)).sort((a,b)=>a.x-b.x);
+    if (pts.length < 2) return;
+
+    ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(X(pts[0].x), Y(pts[0].y));
+    for (let i=1;i<pts.length;i++) ctx.lineTo(X(pts[i].x), Y(pts[i].y));
+    ctx.stroke();
+
+    if (!drawPoints) return;
+    ctx.fillStyle=color;
+    const r = 3*(window.devicePixelRatio||1);
+    for (const p of pts){
+      ctx.beginPath();
+      ctx.arc(X(p.x), Y(p.y), r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  function drawLineWithPointsRho(ctx, data, XR, Y, color, drawPoints=true){
+    const pts = data.filter(p=>isFin(p.rho,p.y)).sort((a,b)=>a.rho-b.rho);
+    if (pts.length < 2) return;
+
+    ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(XR(pts[0].rho), Y(pts[0].y));
+    for (let i=1;i<pts.length;i++) ctx.lineTo(XR(pts[i].rho), Y(pts[i].y));
+    ctx.stroke();
+
+    if (!drawPoints) return;
+    ctx.fillStyle=color;
+    const r = 3*(window.devicePixelRatio||1);
+    for (const p of pts){
+      ctx.beginPath();
+      ctx.arc(XR(p.rho), Y(p.y), r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // Üst yoğunluk ekseni: sadece [x0..x1] aralığında çiz
+  function drawDensityAxisTop(ctx, {x0,x1,y,ticks,label}){
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.strokeStyle = "#777";
+    ctx.fillStyle = "#111";
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+
+    ctx.font = `${Math.round(12*dpr)}px Arial`;
+    ctx.fillText(label, x0, y - Math.round(10*dpr));
+
+    const n = ticks.length;
+    for (let i=0;i<n;i++){
+      const t = (n===1) ? 0 : i/(n-1);
+      const x = x0 + t*(x1-x0);
+
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x, y + Math.round(10*dpr));
+      ctx.stroke();
+
+      const txt = ticks[i].toFixed(2);
+      ctx.font = `${Math.round(11*dpr)}px Arial`;
+      const tw = ctx.measureText(txt).width;
+      ctx.fillText(txt, x - tw/2, y - Math.round(6*dpr));
+    }
+    ctx.restore();
+  }
+
+  // Yatay "kesiştirme" çizgileri:
+  // - Float noktası: aynı y’de sağa kadar (plot sonuna)
+  // - Sink noktası: aynı y’de sola kadar (plot başına)
+  function drawHorizontalCrossLines(ctx, floatPts, sinkPtsRaw, YL, YR, padL, padR, padT, padB, W){
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.setLineDash([6*dpr, 6*dpr]);
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 1;
+
+    // float: rightward
+    for (const p of floatPts){
+      const y = YL(p.y);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);          // istersen burayı X(p.x) yapabiliriz; sen "x boyunca" dediğin için soldan başlatıyorum
+      ctx.lineTo(W-padR, y);
+      ctx.stroke();
+    }
+
+    // sink: leftward (right axis y mapping)
+    for (const p of sinkPtsRaw){
+      const y = YR(p.y);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(W-padR, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  // ---------------- Combined chart ----------------
+  function drawCombinedChart(rows){
+    const c = document.getElementById("chartAll");
+    const ctx = c.getContext("2d");
+    resizeCanvasToDisplaySize(c);
+    const W=c.width, H=c.height;
+    ctx.clearRect(0,0,W,H);
+
+    // Curves
+    const elem = [];
+    let prev=0;
+    rows.forEach(r=>{
+      elem.push({x:r.k, y: prev + r.m/2});
+      prev += r.m;
+    });
+    const floatPts = rows.map(r=>({x:r.f_SK, y:r.f_SM})).filter(p=>isFin(p.x,p.y));
+    const sinkPtsRaw = rows.map(r=>({x:r.s_SK, y:r.s_SM})).filter(p=>isFin(p.x,p.y));
+
+    const elemExt = extendToY(elem, 100);
+
+    // sink: last point vertical drop to y=0
+    const sinkPts = [...sinkPtsRaw];
+    if (sinkPts.length){
+      const last = sinkPts.reduce((a,b)=> (b.x>a.x ? b : a), sinkPts[0]);
+      sinkPts.push({x:last.x, y:0});
+    }
+
+    // density curve points (rho boundary vs cumulative float)
+    const densityCurve = rows
+      .filter(r=>Number.isFinite(r.max) && Number.isFinite(r.f_SM))
+      .map(r=>({rho:r.max, y:r.f_SM}))
+      .sort((a,b)=>a.rho-b.rho);
+
+    // Ranges
+    const xMin=0, xMax=100, yMin=0, yMax=100;
+
+    const dpr = window.devicePixelRatio || 1;
+    const padL = Math.round(76*dpr);
+    const padR = Math.round(76*dpr);
+    const padT = Math.round(52*dpr);
+    const padB = Math.round(60*dpr);
+
+    const X = (x)=> padL + (x-xMin)*(W-padL-padR)/(xMax-xMin);
+    const YL = (y)=> padT + (y-yMin)*(H-padT-padB)/(yMax-yMin);            // 0 top
+    const YR = (y)=> padT + (yMax - y)*(H-padT-padB)/(yMax-yMin);          // 100 top
+
+    // Density mapping: 1.90 -> x=30 ; 1.20 -> x=100
+    const rhoLeft=1.90, rhoRight=1.20;
+    const xAtRhoLeft = X(30);
+    const xAtRhoRight = X(100);
+    const XR = (rho)=>{
+      const t = (rhoLeft - rho) / (rhoLeft - rhoRight);
+      const x = xAtRhoLeft + t*(xAtRhoRight - xAtRhoLeft);
+      return Math.max(padL, Math.min(W-padR, x));
+    };
+
+    // Grid
+    ctx.strokeStyle="#e6e6e6"; ctx.lineWidth=1;
+    for (let t=0;t<=10;t++){
+      const y = padT + t*(H-padT-padB)/10;
+      ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    }
+    for (let t=0;t<=10;t++){
+      const x = padL + t*(W-padL-padR)/10;
+      ctx.beginPath(); ctx.moveTo(x,padT); ctx.lineTo(x,H-padB); ctx.stroke();
+    }
+
+    // Density vertical lines
+    ctx.save();
+    ctx.setLineDash([6*dpr, 6*dpr]);
+    ctx.strokeStyle="#bdbdbd";
+    for (const rho of DENSITY_TICKS){
+      const x = XR(rho);
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, H-padB);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Axes
+    ctx.strokeStyle="#111"; ctx.lineWidth=1.2;
+    ctx.beginPath();
+    ctx.moveTo(padL,padT); ctx.lineTo(padL,H-padB);
+    ctx.lineTo(W-padR,H-padB);
+    ctx.moveTo(W-padR,padT); ctx.lineTo(W-padR,H-padB);
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle="#111";
+    ctx.font = `${Math.round(13*dpr)}px Arial`;
+    ctx.fillText("Kül (Ash), %", (W/2)-Math.round(55*dpr), H-Math.round(18*dpr));
+
+    ctx.save();
+    ctx.translate(Math.round(20*dpr), (H-padB+padT)/2);
+    ctx.rotate(-Math.PI/2);
+    ctx.fillText("Küm. Yüzen (Cum. Float), %", 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(W-Math.round(20*dpr), (H-padB+padT)/2);
+    ctx.rotate(-Math.PI/2);
+    ctx.fillText("Küm. Batan (Cum. Sink), %", 0, 0);
+    ctx.restore();
+
+    // Tick labels
+    ctx.fillStyle="#333";
+    ctx.font = `${Math.round(11*dpr)}px Arial`;
+    for (let t=0;t<=10;t++){
+      const v=t*10;
+      const y=padT + t*(H-padT-padB)/10;
+      ctx.fillText(String(v), Math.round(46*dpr), y+Math.round(4*dpr));
+      ctx.fillText(String(100-v), W-padR+Math.round(10*dpr), y+Math.round(4*dpr));
+      const x=padL + t*(W-padL-padR)/10;
+      ctx.fillText(String(v), x-Math.round(7*dpr), H-padB+Math.round(22*dpr));
+    }
+
+    // Top density axis
+    drawDensityAxisTop(ctx, {
+      x0:xAtRhoLeft, x1:xAtRhoRight,
+      y: padT - Math.round(22*dpr),
+      ticks: DENSITY_TICKS,
+      label: "Yoğ. eğrisi (Density curve)"
+    });
+
+    // Horizontal cross lines (your request)
+    drawHorizontalCrossLines(ctx, floatPts, sinkPtsRaw, YL, YR, padL, padR, padT, padB, W);
+
+    // Curves
+    drawLineWithPoints(ctx, elemExt, X, YL, "#0b74de", true);
+    drawLineWithPoints(ctx, floatPts, X, YL, "#111", true);
+    drawLineWithPoints(ctx, sinkPts, X, YR, "#7a7a7a", true);
+    drawLineWithPointsRho(ctx, densityCurve, XR, YL, "#3aa655", true);
+
+    // Legend
+    drawLegend(ctx, padL+Math.round(10*dpr), padT+Math.round(18*dpr), [
+      {name:"Parça kül (elementary)", color:"#0b74de"},
+      {name:"Yüzen (cum. float)", color:"#111"},
+      {name:"Batan (cum. sink)", color:"#7a7a7a"},
+      {name:"Yoğunluk eğrisi", color:"#3aa655"},
+    ]);
+  }
+
+  // ----------------- CSV export -----------------
+  function exportCSV(){
+    const rows = window.__LAST_ROWS__;
+    if (!rows){ alert("Önce Hesapla."); return; }
+    const header = [
+      "density_range","M_percent","K_percent","MK",
+      "Float_SM","Float_SMK","Float_SK",
+      "Sink_SM","Sink_SMK","Sink_SK"
+    ].join(",");
+    const lines=[header];
+    rows.forEach(r=>{
+      lines.push([
+        csvCell(r.label), csvCell(r.m), csvCell(r.k), csvCell(r.mk),
+        csvCell(r.f_SM), csvCell(r.f_SMK), csvCell(r.f_SK),
+        csvCell(r.s_SM), csvCell(r.s_SMK), csvCell(r.s_SK),
+      ].join(","));
+    });
+    downloadCSV(lines.join("\n"),"float_sink_table.csv");
+  }
+  function csvCell(v){
+    const s = String(v ?? "");
+    if (/[,"\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+    return s;
+  }
+  function downloadCSV(text, filename){
+    const blob = new Blob([text], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  init();
+  window.addEventListener("resize", ()=>{ if (window.__LAST_ROWS__) drawCombinedChart(window.__LAST_ROWS__); });
+</script>
+</body>
+</html>
